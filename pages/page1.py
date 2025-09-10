@@ -107,19 +107,19 @@ layout = html.Div(className="weatherPage clear", children=[
 def fetch_weather(city, country, tempUnit):
     try:
         # Geocode
-        from geopy.exc import GeocoderUnavailable, GeocoderTimedOut
+from geopy.exc import GeocoderUnavailable, GeocoderTimedOut
 
 try:
     location = placeFinder.geocode(f"{city}, {country}", timeout=10)
 except (GeocoderUnavailable, GeocoderTimedOut) as e:
     print(f"Geocoding failed: {e}")
     location = None
-
 if not location:
     return {"error": "Location not found."}
-        lat, lon = float(location.latitude), float(location.longitude)
-        resolved_place = location.address
-        lat_str, lon_str = f"{lat:.3f}", f"{lon:.3f}"
+
+lat, lon = float(location.latitude), float(location.longitude)
+resolved_place = location.address
+lat_str, lon_str = f"{lat:.3f}", f"{lon:.3f}"
 
         # Units
         temp_unit = "fahrenheit" if str(tempUnit).lower().startswith("f") else "celsius"
@@ -376,4 +376,5 @@ def render_summary_table(data):
             ])
         ]
     )
+
 
