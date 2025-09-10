@@ -1,14 +1,15 @@
 import dash
 from dash import html, dcc, Input, Output, callback
-from geopy.geocoders import Nominatim
-import requests_cache
-from retry_requests import retry
-import openmeteo_requests
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderUnavailable, GeocoderTimedOut
+import requests_cache
+from retry_requests import retry
+import openmeteo_requests
 
-# ----- Initialize geopy and OpenMeteo -----
+# Initialize services
 placeFinder = Nominatim(user_agent="my_user_agent")
 cache_session = requests_cache.CachedSession(".cache", expire_after=3600)
 retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
@@ -16,8 +17,6 @@ openmeteo = openmeteo_requests.Client(session=retry_session)
 
 # Register page
 dash.register_page(__name__, path="/weather", name="Weather Report")
-
-# --- Animated icon snippets (namespaced classes) ---
 def sun_icon():
     return html.Div(className="weather-icon-wrap", children=[
         html.Div(className="wx-icon sun", children=[
@@ -46,9 +45,7 @@ def rain_icon():
             html.Span(className="drop d3"),
         ])
     ])
-
-# ----- Layout -----
-layout = html.Div(className="weatherPage clear", children=[
+    layout = html.Div(className="weatherPage clear", children=[
     html.H1("Weather Report"),
 
     html.Div([
@@ -77,28 +74,15 @@ layout = html.Div(className="weatherPage clear", children=[
         )
     ], style={"margin-bottom": "20px"}),
 
-    # Shared data store
     dcc.Store(id="wx-data"),
-
-    # Icon + current card
     html.Div(id="weather-icon", style={"margin": "6px 0 12px"}),
     html.Div(id="GetWeather", className="main-card"),
-
-    # Map instead of the daily chart
     dcc.Graph(id="place-map", figure={"data": [], "layout": {"title": "Location Map"}}),
-
-    # Hourly chart + small summary
     dcc.Graph(id="hourly-chart", figure={"data": [], "layout": {"title": "Hourly Temperature"}}),
     html.Div(id="summary-table", style={"maxWidth": "680px", "margin": "10px auto"}),
-
-    # 7-day cards strip
     html.Div(id="forecast-cards", style={"display": "flex", "overflowX": "auto", "padding": "10px"})
 ])
-
-# =========================================================
-# Callback 1: Fetch data once and put in Store (Open-Meteo)
-# =========================================================
-@callback(
+    @callback(
     Output("wx-data", "data"),
     Input("inputCity", "value"),
     Input("inputCountry", "value"),
@@ -106,69 +90,69 @@ layout = html.Div(className="weatherPage clear", children=[
 )
 def fetch_weather(city, country, tempUnit):
     try:
-        # Geocode
-from geopy.exc import GeocoderUnavailable, GeocoderTimedOut
+        # Geocode location
+        location = placeFinder.geocode(f"{city}, {country}", timeout=10)
+    except (GeocoderUnavailable, GeocoderTimedOut) as e:
+        print(f"Geocoding failed: {e}")
+        location = None
 
-try:
-    location = placeFinder.geocode(f"{city}, {country}", timeout=10)
-except (GeocoderUnavailable, GeocoderTimedOut) as e:
-    print(f"Geocoding failed: {e}")
-    location = None
-if not location:
-    return {"error": "Location not found."}
+    if not location:
+        return {"error": "Location not found."}
 
-lat, lon = float(location.latitude), float(location.longitude)
-resolved_place = location.address
-lat_str, lon_str = f"{lat:.3f}", f"{lon:.3f}"
+    lat, lon = float(location.latitude), float(location.longitude)
+    resolved_place = location.address
+    lat_str, lon_str = f"{lat:.3f}", f"{lon:.3f}"
 
-        # Units
-        temp_unit = "fahrenheit" if str(tempUnit).lower().startswith("f") else "celsius"
-        unit_symbol = "°F" if temp_unit == "fahrenheit" else "°C"
+    # Temperature unit
+    temp_unit = "fahrenheit" if str(tempUnit).lower().startswith("f") else "celsius"
+    unit_symbol = "°F" if temp_unit == "fahrenheit" else "°C"
 
-        # API call
-        api_params = {
-            "latitude": lat,
-            "longitude": lon,
-            "timezone": "auto",
-            "temperature_unit": temp_unit,
-            "hourly": ["temperature_2m", "precipitation", "relative_humidity_2m"],
-            "past_days": 3,
-            "forecast_days": 4,
-            "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum"],
-        }
+    # API parameters
+    api_params = {
+        "latitude": lat,
+        "longitude": lon,
+        "timezone": "auto",
+        "temperature_unit": temp_unit,
+        "hourly": ["temperature_2m", "precipitation", "relative_humidity_2m"],
+        "past_days": 3,
+        "forecast_days": 4,
+        "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum"],
+    }
+
+    try:
         response = openmeteo.weather_api("https://api.open-meteo.com/v1/forecast", params=api_params)[0]
 
-        # Hourly
+        # Hourly data
         hourly = response.Hourly()
-        t_start = pd.to_datetime(hourly.Time(),    unit="s", utc=True)
-        t_end   = pd.to_datetime(hourly.TimeEnd(), unit="s", utc=True)
-        step    = pd.Timedelta(seconds=hourly.Interval())
-        dt_idx  = pd.date_range(start=t_start, end=t_end, freq=step, inclusive="left")
+        t_start = pd.to_datetime(hourly.Time(), unit="s", utc=True)
+        t_end = pd.to_datetime(hourly.TimeEnd(), unit="s", utc=True)
+        step = pd.Timedelta(seconds=hourly.Interval())
+        dt_idx = pd.date_range(start=t_start, end=t_end, freq=step, inclusive="left")
 
-        local_tz  = dt_idx.tz
+        local_tz = dt_idx.tz or pd.Timestamp.now().tz
         now_local = pd.Timestamp.now(tz=local_tz)
         diff_secs = ((dt_idx - now_local) / pd.Timedelta(seconds=1)).astype(float)
-        idx_now   = int(np.argmin(np.abs(diff_secs)))
+        idx_now = int(np.argmin(np.abs(diff_secs)))
 
         hourly_times_local = dt_idx.tz_convert(None).strftime("%Y-%m-%d %H:%M").tolist()
-        hourly_temp   = hourly.Variables(0).ValuesAsNumpy().tolist()
+        hourly_temp = hourly.Variables(0).ValuesAsNumpy().tolist()
         hourly_precip = hourly.Variables(1).ValuesAsNumpy().tolist()
-        hourly_humid  = hourly.Variables(2).ValuesAsNumpy().tolist()
+        hourly_humid = hourly.Variables(2).ValuesAsNumpy().tolist()
 
-        # Daily
-        daily  = response.Daily()
-        d_start = pd.to_datetime(daily.Time(),    unit="s", utc=True)
-        d_end   = pd.to_datetime(daily.TimeEnd(), unit="s", utc=True)
-        d_step  = pd.Timedelta(seconds=daily.Interval())
-        d_idx   = pd.date_range(start=d_start, end=d_end, freq=d_step, inclusive="left").tz_convert(local_tz)
+        # Daily data
+        daily = response.Daily()
+        d_start = pd.to_datetime(daily.Time(), unit="s", utc=True)
+        d_end = pd.to_datetime(daily.TimeEnd(), unit="s", utc=True)
+        d_step = pd.Timedelta(seconds=daily.Interval())
+        d_idx = pd.date_range(start=d_start, end=d_end, freq=d_step, inclusive="left").tz_convert(local_tz)
 
-        today   = pd.Timestamp.now(tz=local_tz).normalize()
+        today = pd.Timestamp.now(tz=local_tz).normalize()
         offsets = ((d_idx.normalize() - today).days).tolist()
 
         daily_dates = d_idx.tz_convert(None).strftime("%Y-%m-%d").tolist()
-        daily_tmax  = daily.Variables(0).ValuesAsNumpy().tolist()
-        daily_tmin  = daily.Variables(1).ValuesAsNumpy().tolist()
-        daily_rain  = daily.Variables(2).ValuesAsNumpy().tolist()  # mm/day
+        daily_tmax = daily.Variables(0).ValuesAsNumpy().tolist()
+        daily_tmin = daily.Variables(1).ValuesAsNumpy().tolist()
+        daily_rain = daily.Variables(2).ValuesAsNumpy().tolist()
 
         return {
             "meta": {
@@ -193,75 +177,107 @@ lat_str, lon_str = f"{lat:.3f}", f"{lon:.3f}"
                 "offsets": offsets,
             }
         }
+
     except Exception as e:
-        return {"error": str(e)}
-
-# ===================================================================
-# Callback 2: Current card + animated icon + 7 daily "Day -3..+3" cards
-# ===================================================================
+        return {"error": f"Weather data fetch failed: {str(e)}"}
 @callback(
-    Output("GetWeather", "children"),
-    Output("forecast-cards", "children"),
-    Output("weather-icon", "children"),
-    Input("wx-data", "data"),
-    Input("paramSettings", "value"),
-    prevent_initial_call=False
+    Output("wx-data", "data"),
+    Input("inputCity", "value"),
+    Input("inputCountry", "value"),
+    Input("TempSetting", "value"),
 )
-def render_current_and_cards(data, params):
-    if not data or "error" in data:
-        msg = data.get("error", "No data") if isinstance(data, dict) else "No data"
-        return html.Div(f"Error: {msg}", className="main-card"), [], html.Div()
+def fetch_weather(city, country, tempUnit):
+    try:
+        # Geocode location
+        location = placeFinder.geocode(f"{city}, {country}", timeout=10)
+    except (GeocoderUnavailable, GeocoderTimedOut) as e:
+        print(f"Geocoding failed: {e}")
+        location = None
 
-    meta = data["meta"]
-    H = data["hourly"]
+    if not location:
+        return {"error": "Location not found."}
 
-    idx = max(0, min(int(H["idx_now"]), len(H["times"]) - 1))
-    temp   = float(H["temperature"][idx])
-    humid  = float(H["humidity"][idx])
-    precip = float(H["precip"][idx])
-    time_str = H["times"][idx]
-    unit_symbol = meta["unit_symbol"]
+    lat, lon = float(location.latitude), float(location.longitude)
+    resolved_place = location.address
+    lat_str, lon_str = f"{lat:.3f}", f"{lon:.3f}"
 
-    # Icon + background class
-    if precip > 0.2:
-        bg_class, icon = "rainy", rain_icon()
-    elif humid >= 70:
-        bg_class, icon = "cloudy", cloud_icon()
-    else:
-        bg_class, icon = "clear", sun_icon()
+    # Temperature unit
+    temp_unit = "fahrenheit" if str(tempUnit).lower().startswith("f") else "celsius"
+    unit_symbol = "°F" if temp_unit == "fahrenheit" else "°C"
 
-    rain_now_txt = f"{precip/25.4:.2f} in" if meta["temp_unit"] == "fahrenheit" else f"{precip:.2f} mm"
+    # API parameters
+    api_params = {
+        "latitude": lat,
+        "longitude": lon,
+        "timezone": "auto",
+        "temperature_unit": temp_unit,
+        "hourly": ["temperature_2m", "precipitation", "relative_humidity_2m"],
+        "past_days": 3,
+        "forecast_days": 4,
+        "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum"],
+    }
 
-    pieces = [
-        html.H2("Current conditions"),
-        html.Small(f"{meta['place']} • ({meta['lat']}, {meta['lon']})"),
-        html.P(f"Time: {time_str}")
-    ]
-    if "Temperature" in params: pieces.append(html.P(f"Temperature: {temp:.1f}{unit_symbol}"))
-    if "Humidity"   in params: pieces.append(html.P(f"Humidity: {humid:.0f}%"))
-    if "Rain"       in params: pieces.append(html.P(f"Rain: {rain_now_txt}"))
+    try:
+        response = openmeteo.weather_api("https://api.open-meteo.com/v1/forecast", params=api_params)[0]
 
-    main_card = html.Div(className=f"main-card {bg_class}", children=pieces)
+        # Hourly data
+        hourly = response.Hourly()
+        t_start = pd.to_datetime(hourly.Time(), unit="s", utc=True)
+        t_end = pd.to_datetime(hourly.TimeEnd(), unit="s", utc=True)
+        step = pd.Timedelta(seconds=hourly.Interval())
+        dt_idx = pd.date_range(start=t_start, end=t_end, freq=step, inclusive="left")
 
-    # 7 daily cards (Day -3..+3)
-    D = data["daily"]
-    cards = []
-    for date_str, tmax, tmin, rain_mm, off in zip(D["dates"], D["tmax"], D["tmin"], D["precip_sum_mm"], D["offsets"]):
-        if -3 <= int(off) <= 3:
-            rain_txt = f"{float(rain_mm)/25.4:.2f} in" if meta["temp_unit"] == "fahrenheit" else f"{float(rain_mm):.2f} mm"
-            cards.append(
-                html.Div(className="card", children=[
-                    html.P(f"Day {int(off):+d}".replace("+", "")),
-                    html.P(f"High: {float(tmax):.0f}{unit_symbol} • Low: {float(tmin):.0f}{unit_symbol}"),
-                    html.P(f"Rain: {rain_txt}")
-                ])
-            )
+        local_tz = dt_idx.tz or pd.Timestamp.now().tz
+        now_local = pd.Timestamp.now(tz=local_tz)
+        diff_secs = ((dt_idx - now_local) / pd.Timedelta(seconds=1)).astype(float)
+        idx_now = int(np.argmin(np.abs(diff_secs)))
 
-    return main_card, cards, icon
+        hourly_times_local = dt_idx.tz_convert(None).strftime("%Y-%m-%d %H:%M").tolist()
+        hourly_temp = hourly.Variables(0).ValuesAsNumpy().tolist()
+        hourly_precip = hourly.Variables(1).ValuesAsNumpy().tolist()
+        hourly_humid = hourly.Variables(2).ValuesAsNumpy().tolist()
 
-# ===============================
-# Callback 3: Hourly Temp Plot
-# ===============================
+        # Daily data
+        daily = response.Daily()
+        d_start = pd.to_datetime(daily.Time(), unit="s", utc=True)
+        d_end = pd.to_datetime(daily.TimeEnd(), unit="s", utc=True)
+        d_step = pd.Timedelta(seconds=daily.Interval())
+        d_idx = pd.date_range(start=d_start, end=d_end, freq=d_step, inclusive="left").tz_convert(local_tz)
+
+        today = pd.Timestamp.now(tz=local_tz).normalize()
+        offsets = ((d_idx.normalize() - today).days).tolist()
+
+        daily_dates = d_idx.tz_convert(None).strftime("%Y-%m-%d").tolist()
+        daily_tmax = daily.Variables(0).ValuesAsNumpy().tolist()
+        daily_tmin = daily.Variables(1).ValuesAsNumpy().tolist()
+        daily_rain = daily.Variables(2).ValuesAsNumpy().tolist()
+
+        return {
+            "meta": {
+                "place": resolved_place,
+                "lat": lat_str,
+                "lon": lon_str,
+                "unit_symbol": unit_symbol,
+                "temp_unit": temp_unit,
+            },
+            "hourly": {
+                "times": hourly_times_local,
+                "temperature": hourly_temp,
+                "precip": hourly_precip,
+                "humidity": hourly_humid,
+                "idx_now": idx_now,
+            },
+            "daily": {
+                "dates": daily_dates,
+                "tmax": daily_tmax,
+                "tmin": daily_tmin,
+                "precip_sum_mm": daily_rain,
+                "offsets": offsets,
+            }
+        }
+
+    except Exception as e:
+        return {"error": f"Weather data fetch failed: {str(e)}"}
 @callback(
     Output("hourly-chart", "figure"),
     Input("wx-data", "data"),
@@ -290,10 +306,6 @@ def render_hourly_chart(data):
         },
     }
     return fig
-
-# ===============================
-# Callback 4: Location Map (NEW)
-# ===============================
 @callback(
     Output("place-map", "figure"),
     Input("wx-data", "data"),
@@ -307,18 +319,19 @@ def render_map(data):
     H = data["hourly"]
     idx = max(0, min(int(H["idx_now"]), len(H["times"]) - 1))
 
-    # Build hover text using the "now" reading
-    unit = meta["unit_symbol"]
     temp = float(H["temperature"][idx])
     humid = float(H["humidity"][idx])
     precip = float(H["precip"][idx])
+    unit = meta["unit_symbol"]
     rain_txt = f"{precip/25.4:.2f} in" if meta["temp_unit"] == "fahrenheit" else f"{precip:.2f} mm"
 
-    hover = (f"<b>{meta['place']}</b><br>"
-             f"Lat/Lon: {meta['lat']}, {meta['lon']}<br>"
-             f"Temp: {temp:.1f}{unit}<br>"
-             f"Humidity: {humid:.0f}%<br>"
-             f"Precip: {rain_txt}")
+    hover = (
+        f"<b>{meta['place']}</b><br>"
+        f"Lat/Lon: {meta['lat']}, {meta['lon']}<br>"
+        f"Temp: {temp:.1f}{unit}<br>"
+        f"Humidity: {humid:.0f}%<br>"
+        f"Precip: {rain_txt}"
+    )
 
     fig = go.Figure(go.Scattermapbox(
         lat=[float(meta["lat"])],
@@ -341,10 +354,6 @@ def render_map(data):
         showlegend=False
     )
     return fig
-
-# =================================
-# Callback 5: Small summary table
-# =================================
 @callback(
     Output("summary-table", "children"),
     Input("wx-data", "data"),
@@ -376,5 +385,6 @@ def render_summary_table(data):
             ])
         ]
     )
+    
 
 
