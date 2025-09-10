@@ -239,10 +239,11 @@ def render_map(data):
 
     hover = (
         f"<b>{meta['place']}</b><br>"
-        f"Lat/Lon: {meta['lat']}, {meta['lon']}
+        f"Lat/Lon: {meta['lat']}, {meta['lon']}"
 
     )
     
+
 
 
 
